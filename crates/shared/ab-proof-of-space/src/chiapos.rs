@@ -192,7 +192,7 @@ where
     /// There is also `Self::create_proofs_parallel()` that can achieve higher performance and lower
     /// latency at the cost of lower CPU efficiency and higher memory usage.
     #[cfg(feature = "alloc")]
-    pub fn create_proofs(seed: Seed, cache: &TablesCache) -> Box<Proofs<K>>
+    pub fn create_proofs<const LITTLE_ENDIAN_INDEX: bool>(seed: Seed, cache: &TablesCache) -> Box<Proofs<K>>
     where
         [(); 2usize.pow(u32::from(NUM_TABLES - 1)) * usize::from(K) / u8::BITS as usize]:,
     {
@@ -202,7 +202,8 @@ where
         let (table_4, table_3) = Table::<K, 4>::create(table_3, cache);
         let (table_5, table_4) = Table::<K, 5>::create(table_4, cache);
         let (table_6, table_5) = Table::<K, 6>::create(table_5, cache);
-        let (table_6_proof_targets, table_6) = Table::<K, 7>::create_proof_targets(table_6, cache);
+        let (table_6_proof_targets, table_6) =
+            Table::<K, 7>::create_proof_targets::<LITTLE_ENDIAN_INDEX>(table_6, cache);
 
         // TODO: Rewrite this more efficiently
         let mut proofs = Box::<Proofs<K>>::new_uninit();
@@ -289,7 +290,10 @@ where
     /// Almost the same as [`Self::create_proofs()`], but uses parallelism internally for better
     /// performance and lower latency at the cost of lower CPU efficiency and higher memory usage
     #[cfg(feature = "parallel")]
-    pub fn create_proofs_parallel(seed: Seed, cache: &TablesCache) -> Box<Proofs<K>>
+    pub fn create_proofs_parallel<const LITTLE_ENDIAN_INDEX: bool>(
+        seed: Seed,
+        cache: &TablesCache,
+    ) -> Box<Proofs<K>>
     where
         [(); 2usize.pow(u32::from(NUM_TABLES - 1)) * usize::from(K) / u8::BITS as usize]:,
     {
@@ -300,7 +304,7 @@ where
         let (table_5, table_4) = Table::<K, 5>::create_parallel(table_4, cache);
         let (table_6, table_5) = Table::<K, 6>::create_parallel(table_5, cache);
         let (table_6_proof_targets, table_6) =
-            Table::<K, 7>::create_proof_targets_parallel(table_6, cache);
+            Table::<K, 7>::create_proof_targets_parallel::<LITTLE_ENDIAN_INDEX>(table_6, cache);
 
         // TODO: Rewrite this more efficiently
         let mut proofs = Box::<Proofs<K>>::new_uninit();
