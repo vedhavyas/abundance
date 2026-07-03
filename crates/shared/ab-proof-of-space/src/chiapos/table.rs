@@ -1456,6 +1456,28 @@ where
     }
 }
 
+/// Maps a table-7 entry's `first_k_bits` to its target s-bucket.
+///
+/// `LITTLE_ENDIAN_INDEX = false` is the native convention (`s_bucket == first_k_bits`). `LITTLE_ENDIAN_INDEX = true` selects
+/// the little-endian challenge-byte convention (a proof for s-bucket `cs` has
+/// `first_k_bits == cs_lo << (K - 8) | cs_hi << (K - 16)`); it inverts that and keeps only entries
+/// whose low `K - 16` bits are clear.
+#[cfg(feature = "alloc")]
+#[inline(always)]
+fn proof_target_s_bucket<const K: u8, const LITTLE_ENDIAN_INDEX: bool>(first_k_bits: u32) -> Option<u16> {
+    if LITTLE_ENDIAN_INDEX {
+        let low_bits = (K as u32).wrapping_sub(16);
+        if first_k_bits & ((1u32 << low_bits) - 1) != 0 {
+            return None;
+        }
+        let cs_lo = (first_k_bits >> (K as u32 - 8)) & 0xff;
+        let cs_hi = (first_k_bits >> low_bits) & 0xff;
+        Some((cs_lo | (cs_hi << 8)) as u16)
+    } else {
+        u16::try_from(first_k_bits).ok()
+    }
+}
+
 #[cfg(feature = "alloc")]
 impl<const K: u8> Table<K, 7>
 where
@@ -1467,7 +1489,7 @@ where
 {
     /// Proof targets from the last table into the previous table, one for each
     /// [`Record::NUM_S_BUCKETS`].
-    pub(super) fn create_proof_targets(
+    pub(super) fn create_proof_targets<const LITTLE_ENDIAN_INDEX: bool>(
         parent_table: Table<K, 6>,
         cache: &TablesCache,
     ) -> (
@@ -1514,7 +1536,7 @@ where
                     const {
                         assert!(Record::NUM_S_BUCKETS == (u16::MAX as usize) + 1);
                     }
-                    let Ok(s_bucket) = u16::try_from(s_bucket) else {
+                    let Some(s_bucket) = proof_target_s_bucket::<K, LITTLE_ENDIAN_INDEX>(s_bucket) else {
                         continue;
                     };
                     let positions = &mut table_6_proof_targets[usize::from(s_bucket)];
@@ -1532,7 +1554,7 @@ where
                 const {
                     assert!(Record::NUM_S_BUCKETS == (u16::MAX as usize) + 1);
                 }
-                let Ok(s_bucket) = u16::try_from(s_bucket) else {
+                let Some(s_bucket) = proof_target_s_bucket::<K, LITTLE_ENDIAN_INDEX>(s_bucket) else {
                     continue;
                 };
 
@@ -1552,7 +1574,7 @@ where
     /// better performance (though not efficiency of CPU and memory usage), if you create multiple
     /// tables in parallel, prefer this method for better overall performance.
     #[cfg(feature = "parallel")]
-    pub(super) fn create_proof_targets_parallel(
+    pub(super) fn create_proof_targets_parallel<const LITTLE_ENDIAN_INDEX: bool>(
         parent_table: Table<K, 6>,
         cache: &TablesCache,
     ) -> (
@@ -1635,7 +1657,7 @@ where
                             const {
                                 assert!(Record::NUM_S_BUCKETS == (u16::MAX as usize) + 1);
                             }
-                            let Ok(s_bucket) = u16::try_from(s_bucket) else {
+                            let Some(s_bucket) = proof_target_s_bucket::<K, LITTLE_ENDIAN_INDEX>(s_bucket) else {
                                 continue;
                             };
 
@@ -1653,7 +1675,7 @@ where
                         const {
                             assert!(Record::NUM_S_BUCKETS == (u16::MAX as usize) + 1);
                         }
-                        let Ok(s_bucket) = u16::try_from(s_bucket) else {
+                        let Some(s_bucket) = proof_target_s_bucket::<K, LITTLE_ENDIAN_INDEX>(s_bucket) else {
                             continue;
                         };
 

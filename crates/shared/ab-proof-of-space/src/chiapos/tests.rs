@@ -14,9 +14,9 @@ fn self_verification() {
     #[cfg(feature = "parallel")]
     let tables_parallel = Tables::<K>::create_parallel(seed, &cache);
 
-    let all_proofs = Tables::<K>::create_proofs(seed, &cache);
+    let all_proofs = Tables::<K>::create_proofs::<false>(seed, &cache);
     #[cfg(feature = "parallel")]
-    let all_proofs_parallel = Tables::<K>::create_proofs_parallel(seed, &cache);
+    let all_proofs_parallel = Tables::<K>::create_proofs_parallel::<false>(seed, &cache);
 
     for challenge_index in 0..1000_u32 {
         let mut challenge = [0; 32];
