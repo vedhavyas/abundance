@@ -271,14 +271,13 @@ fn find_proofs_impl<const SUBGROUP_SIZE: u32>(
         assert!(MIN_SUBGROUP_SIZE >= 2);
     }
 
-    // `chunk_index` is used to emulate `for _ in 0..2` loops, while using a single variable for
-    // tracking the progress instead of a separate variable for each loop
-    let mut chunk_index = 0u32;
-    // Reading positions from table 6
-    loop {
+    // Reading positions from table 6. Each table level contributes one bit to `chunk_index` via an
+    // explicit two-iteration loop rather than a single shared counter with break/`<<=`/`>>=`, which
+    // Naga's Metal backend miscompiles (dropping loop iterations, so half the proofs go unwritten).
+    for table_6_chunk in 0..2u32 {
         let table_6_proof_targets = subgroup_shuffle(
             table_6_proof_targets,
-            SUBGROUP_SIZE / 2 * (chunk_index & 1) + subgroup_local_invocation_id / 2,
+            SUBGROUP_SIZE / 2 * table_6_chunk + subgroup_local_invocation_id / 2,
         );
         let table_6_proof_target = table_6_proof_targets[left_right];
 
@@ -289,11 +288,10 @@ fn find_proofs_impl<const SUBGROUP_SIZE: u32>(
         };
 
         // Reading positions from table 5
-        chunk_index <<= 1u8;
-        loop {
+        for table_5_chunk in 0..2u32 {
             let table_5_proof_targets = subgroup_shuffle(
                 table_5_proof_targets,
-                SUBGROUP_SIZE / 2 * (chunk_index & 1) + subgroup_local_invocation_id / 2,
+                SUBGROUP_SIZE / 2 * table_5_chunk + subgroup_local_invocation_id / 2,
             );
             let table_5_proof_target = table_5_proof_targets[left_right];
 
@@ -304,11 +302,10 @@ fn find_proofs_impl<const SUBGROUP_SIZE: u32>(
             };
 
             // Reading positions from table 4
-            chunk_index <<= 1u8;
-            loop {
+            for table_4_chunk in 0..2u32 {
                 let table_4_proof_targets = subgroup_shuffle(
                     table_4_proof_targets,
-                    SUBGROUP_SIZE / 2 * (chunk_index & 1) + subgroup_local_invocation_id / 2,
+                    SUBGROUP_SIZE / 2 * table_4_chunk + subgroup_local_invocation_id / 2,
                 );
                 let table_4_proof_target = table_4_proof_targets[left_right];
 
@@ -319,11 +316,10 @@ fn find_proofs_impl<const SUBGROUP_SIZE: u32>(
                 };
 
                 // Reading positions from table 3
-                chunk_index <<= 1u8;
-                loop {
+                for table_3_chunk in 0..2u32 {
                     let table_3_proof_targets = subgroup_shuffle(
                         table_3_proof_targets,
-                        SUBGROUP_SIZE / 2 * (chunk_index & 1) + subgroup_local_invocation_id / 2,
+                        SUBGROUP_SIZE / 2 * table_3_chunk + subgroup_local_invocation_id / 2,
                     );
                     let table_3_proof_target = table_3_proof_targets[left_right];
 
@@ -334,12 +330,10 @@ fn find_proofs_impl<const SUBGROUP_SIZE: u32>(
                     };
 
                     // Reading positions from table 2
-                    chunk_index <<= 1u8;
-                    loop {
+                    for table_2_chunk in 0..2u32 {
                         let table_2_proof_targets = subgroup_shuffle(
                             table_2_proof_targets,
-                            SUBGROUP_SIZE / 2 * (chunk_index & 1)
-                                + subgroup_local_invocation_id / 2,
+                            SUBGROUP_SIZE / 2 * table_2_chunk + subgroup_local_invocation_id / 2,
                         );
                         let table_2_proof_target = table_2_proof_targets[left_right];
 
@@ -349,6 +343,11 @@ fn find_proofs_impl<const SUBGROUP_SIZE: u32>(
                             table_2_positions[table_2_proof_target as usize]
                         };
 
+                        let chunk_index = (table_6_chunk << 4)
+                            | (table_5_chunk << 3)
+                            | (table_4_chunk << 2)
+                            | (table_3_chunk << 1)
+                            | table_2_chunk;
                         let global_x_left_offset =
                             subgroup_local_invocation_id * 2 + chunk_index * SUBGROUP_SIZE * 2;
                         let group_proof_index = global_x_left_offset / PROOF_X_SOURCES as u32;
@@ -452,39 +451,10 @@ fn find_proofs_impl<const SUBGROUP_SIZE: u32>(
                                 );
                             }
                         }
-
-                        if chunk_index & 1 == 1 {
-                            break;
-                        }
-                        chunk_index += 1;
                     }
-                    chunk_index >>= 1u8;
-
-                    if chunk_index & 1 == 1 {
-                        break;
-                    }
-                    chunk_index += 1;
                 }
-                chunk_index >>= 1u8;
-
-                if chunk_index & 1 == 1 {
-                    break;
-                }
-                chunk_index += 1;
             }
-            chunk_index >>= 1u8;
-
-            if chunk_index & 1 == 1 {
-                break;
-            }
-            chunk_index += 1;
         }
-        chunk_index >>= 1u8;
-
-        if chunk_index & 1 == 1 {
-            break;
-        }
-        chunk_index += 1;
     }
 }
 
