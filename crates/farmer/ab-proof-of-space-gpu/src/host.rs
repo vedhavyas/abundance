@@ -10,23 +10,12 @@ use crate::shader::find_proofs::ProofsHost;
 use crate::shader::types::{Metadata, Position, PositionR};
 use crate::shader::{compute_f1, find_proofs, select_shader_features_limits};
 use ab_chacha8::{ChaCha8Block, ChaCha8State, block_to_bytes};
-use ab_core_primitives::pieces::{PieceOffset, Record};
 use ab_core_primitives::pos::PosSeed;
-use ab_core_primitives::sectors::SectorId;
-use ab_erasure_coding::ErasureCoding;
-use ab_farmer_components::plotting::RecordsEncoder;
-use ab_farmer_components::sector::SectorContentsMap;
-use async_lock::Mutex as AsyncMutex;
 use futures::stream::FuturesOrdered;
 use futures::{StreamExt, TryStreamExt};
 use parking_lot::Mutex;
-use rayon::prelude::*;
-use rayon::{ThreadPool, ThreadPoolBuilder};
 use rclite::Arc;
 use std::num::NonZeroU8;
-use std::simd::Simd;
-use std::sync::Arc as StdArc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, iter};
 use tracing::{debug, warn};
 use wgpu::{
@@ -39,10 +28,34 @@ use wgpu::{
     RequestDeviceError, ShaderModule, ShaderRuntimeChecks, ShaderStages,
 };
 
+#[cfg(feature = "records-encoder")]
+use ab_core_primitives::pieces::{PieceOffset, Record};
+#[cfg(feature = "records-encoder")]
+use ab_core_primitives::sectors::SectorId;
+#[cfg(feature = "records-encoder")]
+use ab_erasure_coding::ErasureCoding;
+#[cfg(feature = "records-encoder")]
+use ab_farmer_components::plotting::RecordsEncoder;
+#[cfg(feature = "records-encoder")]
+use ab_farmer_components::sector::SectorContentsMap;
+#[cfg(feature = "records-encoder")]
+use async_lock::Mutex as AsyncMutex;
+#[cfg(feature = "records-encoder")]
+use rayon::prelude::*;
+#[cfg(feature = "records-encoder")]
+use rayon::{ThreadPool, ThreadPoolBuilder};
+#[cfg(feature = "records-encoder")]
+use std::simd::Simd;
+#[cfg(feature = "records-encoder")]
+use std::sync::Arc as StdArc;
+#[cfg(feature = "records-encoder")]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 /// Proof creation error
 #[derive(Debug, thiserror::Error)]
-enum RecordEncodingError {
+pub enum RecordEncodingError {
     /// Too many records
+    #[cfg(feature = "records-encoder")]
     #[error("Too many records: {0}")]
     TooManyRecords(usize),
     /// Proof creation failed previously and the device is now considered broken
@@ -56,9 +69,23 @@ enum RecordEncodingError {
     DevicePoll(#[from] PollError),
 }
 
-struct ProofsHostWrapper<'a> {
+/// Handle to GPU-produced proofs; keeps the underlying buffer mapped until dropped.
+pub struct ProofsHostWrapper<'a> {
     proofs: &'a ProofsHost,
     proofs_host: &'a Buffer,
+}
+
+impl ProofsHostWrapper<'_> {
+    /// Proofs produced for a single seed.
+    pub fn proofs(&self) -> &ProofsHost {
+        self.proofs
+    }
+}
+
+impl fmt::Debug for ProofsHostWrapper<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProofsHostWrapper").finish_non_exhaustive()
+    }
 }
 
 impl Drop for ProofsHostWrapper<'_> {
@@ -217,6 +244,24 @@ impl Device {
         self.adapter_info.backend
     }
 
+    /// Create one proof-producing encoder instance per available queue.
+    ///
+    /// Consumers that run their own record encoding drive these directly instead of going through
+    /// [`Device::instantiate`]'s built-in Reed-Solomon path.
+    pub fn create_proofs_encoder_instances(
+        &self,
+        little_endian_index: bool,
+    ) -> Vec<GpuRecordsEncoderInstance> {
+        self.devices
+            .clone()
+            .into_iter()
+            .map(|(device, queue, module)| {
+                GpuRecordsEncoderInstance::new(device, queue, module, little_endian_index)
+            })
+            .collect()
+    }
+
+    #[cfg(feature = "records-encoder")]
     pub fn instantiate(
         &self,
         erasure_coding: ErasureCoding,
@@ -232,6 +277,7 @@ impl Device {
     }
 }
 
+#[cfg(feature = "records-encoder")]
 pub struct GpuRecordsEncoder {
     id: u32,
     instances: Vec<Mutex<GpuRecordsEncoderInstance>>,
@@ -241,6 +287,7 @@ pub struct GpuRecordsEncoder {
     global_mutex: StdArc<AsyncMutex<()>>,
 }
 
+#[cfg(feature = "records-encoder")]
 impl fmt::Debug for GpuRecordsEncoder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GpuRecordsEncoder")
@@ -254,6 +301,7 @@ impl fmt::Debug for GpuRecordsEncoder {
     }
 }
 
+#[cfg(feature = "records-encoder")]
 impl RecordsEncoder for GpuRecordsEncoder {
     // TODO: Run more than one encoding per device concurrently
     fn encode_records(
@@ -343,6 +391,7 @@ impl RecordsEncoder for GpuRecordsEncoder {
     }
 }
 
+#[cfg(feature = "records-encoder")]
 impl GpuRecordsEncoder {
     fn new(
         id: u32,
@@ -361,7 +410,7 @@ impl GpuRecordsEncoder {
             instances: devices
                 .into_iter()
                 .map(|(device, queue, module)| {
-                    Mutex::new(GpuRecordsEncoderInstance::new(device, queue, module))
+                    Mutex::new(GpuRecordsEncoderInstance::new(device, queue, module, false))
                 })
                 .collect(),
             thread_pool,
@@ -372,7 +421,7 @@ impl GpuRecordsEncoder {
     }
 }
 
-struct GpuRecordsEncoderInstance {
+pub struct GpuRecordsEncoderInstance {
     device: wgpu::Device,
     queue: Queue,
     mapping_error: Arc<Mutex<Option<BufferAsyncError>>>,
@@ -403,8 +452,20 @@ struct GpuRecordsEncoderInstance {
     compute_pipeline_find_proofs: ComputePipeline,
 }
 
+impl fmt::Debug for GpuRecordsEncoderInstance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuRecordsEncoderInstance")
+            .finish_non_exhaustive()
+    }
+}
+
 impl GpuRecordsEncoderInstance {
-    fn new(device: wgpu::Device, queue: Queue, module: ShaderModule) -> Self {
+    fn new(
+        device: wgpu::Device,
+        queue: Queue,
+        module: ShaderModule,
+        little_endian_index: bool,
+    ) -> Self {
         let initial_state_host = device.create_buffer(&BufferDescriptor {
             label: Some("initial_state_host"),
             size: size_of::<ChaCha8Block>() as BufferAddress,
@@ -610,6 +671,7 @@ impl GpuRecordsEncoderInstance {
                 &metadatas_b_gpu,
                 &table_6_proof_targets_sizes_gpu,
                 &table_6_proof_targets_gpu,
+                little_endian_index,
             );
 
         let (bind_group_find_proofs, compute_pipeline_find_proofs) =
@@ -658,7 +720,7 @@ impl GpuRecordsEncoderInstance {
         }
     }
 
-    fn create_proofs(
+    pub fn create_proofs(
         &mut self,
         seed: &PosSeed,
     ) -> Result<ProofsHostWrapper<'_>, RecordEncodingError> {
@@ -1219,6 +1281,7 @@ fn bind_group_and_pipeline_find_matches_and_compute_f7(
     parent_metadatas_gpu: &Buffer,
     table_6_proof_targets_sizes_gpu: &Buffer,
     table_6_proof_targets_gpu: &Buffer,
+    little_endian_index: bool,
 ) -> (BindGroup, ComputePipeline) {
     let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
         label: Some("find_matches_and_compute_f7"),
@@ -1281,7 +1344,11 @@ fn bind_group_and_pipeline_find_matches_and_compute_f7(
         label: Some("find_matches_and_compute_f7"),
         layout: Some(&pipeline_layout),
         module,
-        entry_point: Some("find_matches_and_compute_f7"),
+        entry_point: Some(if little_endian_index {
+            "find_matches_and_compute_f7_le"
+        } else {
+            "find_matches_and_compute_f7"
+        }),
     });
 
     let bind_group = device.create_bind_group(&BindGroupDescriptor {
